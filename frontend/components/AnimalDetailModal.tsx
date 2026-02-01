@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Animal, AtividadeRecente, WeighingHistory } from '../types';
-import { HerdAnimal, HerdType, createWeighing, listWeighings } from '../adapters/herdApi';
+import { Animal, AtividadeRecente, Paddock, PaddockMove, WeighingHistory } from '../types';
+import { HerdAnimal, HerdType, createPaddockMove, createWeighing, listPaddockMoves, listWeighings } from '../adapters/herdApi';
 import { getCurrentNutrition } from '../adapters/nutritionApi';
+import { buildApiUrl } from '../api';
 
 interface AnimalDetailModalProps {
     animal: (Animal | HerdAnimal) | null;
@@ -47,7 +48,7 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
     onAnimalUpdated,
 }) => {
     const resolvedMode: HerdType = mode ?? herdType ?? 'COMMERCIAL';
-    const [activeTab, setActiveTab] = useState<'weighing' | 'activity'>('weighing');
+    const [activeTab, setActiveTab] = useState<'weighing' | 'activity' | 'paddock'>('weighing');
     const [weighingHistory, setWeighingHistory] = useState<WeighingHistory[]>([]);
     const [weighingError, setWeighingError] = useState<string | null>(null);
     const [isLoadingWeighings, setIsLoadingWeighings] = useState(false);
@@ -59,6 +60,14 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
     const [nutritionPlanPhase, setNutritionPlanPhase] = useState<string | null>(null);
     const [isLoadingNutrition, setIsLoadingNutrition] = useState(false);
     const [nutritionError, setNutritionError] = useState<string | null>(null);
+    const [paddockMoves, setPaddockMoves] = useState<PaddockMove[]>([]);
+    const [isLoadingPaddockMoves, setIsLoadingPaddockMoves] = useState(false);
+    const [paddockMoveError, setPaddockMoveError] = useState<string | null>(null);
+    const [paddockOptions, setPaddockOptions] = useState<Paddock[]>([]);
+    const [movePaddockId, setMovePaddockId] = useState('');
+    const [moveStartAt, setMoveStartAt] = useState(new Date().toISOString().slice(0, 10));
+    const [moveNotes, setMoveNotes] = useState('');
+    const [isSavingPaddockMove, setIsSavingPaddockMove] = useState(false);
 
     const animalId = animal?.id;
 
@@ -81,14 +90,60 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
         }
     }, [animalId, resolvedMode]);
 
+    const loadPaddockMoves = useCallback(async () => {
+        if (!animalId) {
+            setPaddockMoves([]);
+            return;
+        }
+        setIsLoadingPaddockMoves(true);
+        setPaddockMoveError(null);
+        try {
+            const moves = await listPaddockMoves(animalId, resolvedMode);
+            setPaddockMoves(moves || []);
+        } catch (error: any) {
+            console.error(error);
+            setPaddockMoveError(error?.message || 'Não foi possível listar movimentações de pasto.');
+            setPaddockMoves([]);
+        } finally {
+            setIsLoadingPaddockMoves(false);
+        }
+    }, [animalId, resolvedMode]);
+
+    const loadPaddockOptions = useCallback(async () => {
+        const farmId = (animal as any)?.farmId;
+        if (!farmId) {
+            setPaddockOptions([]);
+            return;
+        }
+        try {
+            const response = await fetch(buildApiUrl(`/pastos?farmId=${farmId}`), { credentials: 'include' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload?.message || 'Erro ao carregar pastos.');
+            }
+            setPaddockOptions(payload.items || []);
+        } catch (error) {
+            console.error(error);
+            setPaddockOptions([]);
+        }
+    }, [animal]);
+
     useEffect(() => {
         if (animalId) {
             loadWeighings();
+            loadPaddockMoves();
+            loadPaddockOptions();
+            setMovePaddockId('');
+            setMoveStartAt(new Date().toISOString().slice(0, 10));
+            setMoveNotes('');
         } else {
             setWeighingHistory([]);
             setWeighingError(null);
+            setPaddockMoves([]);
+            setPaddockMoveError(null);
+            setPaddockOptions([]);
         }
-    }, [animalId, loadWeighings]);
+    }, [animalId, loadWeighings, loadPaddockMoves, loadPaddockOptions]);
 
     useEffect(() => {
         const farmId = (animal as HerdAnimal)?.farmId;
@@ -157,6 +212,36 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
         }
     };
 
+    const handleAddPaddockMove = async (event: React.FormEvent) => {
+        event.preventDefault();
+        if (!animalId) {
+            return;
+        }
+        if (!movePaddockId) {
+            setPaddockMoveError('Selecione o pasto.');
+            return;
+        }
+        setIsSavingPaddockMove(true);
+        setPaddockMoveError(null);
+        try {
+            await createPaddockMove(animalId, resolvedMode, {
+                paddockId: movePaddockId,
+                startAt: moveStartAt || undefined,
+                notes: moveNotes || undefined,
+            });
+            setMovePaddockId('');
+            setMoveStartAt(new Date().toISOString().slice(0, 10));
+            setMoveNotes('');
+            await loadPaddockMoves();
+            onAnimalUpdated?.();
+        } catch (error: any) {
+            console.error(error);
+            setPaddockMoveError(error?.message || 'Não foi possível movimentar o animal.');
+        } finally {
+            setIsSavingPaddockMove(false);
+        }
+    };
+
     if (!animal) return null;
 
     const detailItems = useMemo(() => {
@@ -172,7 +257,7 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
                 value: animal.pesoAtual !== undefined && animal.pesoAtual !== null ? `${animal.pesoAtual} kg` : '—',
             },
             {
-                label: 'GMD Médio',
+                label: 'GMD atual',
                 value: animal.gmd !== undefined && animal.gmd !== null ? `${animal.gmd.toFixed(2)} kg` : '—',
             },
             {
@@ -196,6 +281,16 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
 
         return [...extraItems, ...baseItems];
     }, [animal, resolvedMode]);
+
+    const currentPaddockMove = useMemo(() => {
+        if (!paddockMoves.length) {
+            return null;
+        }
+        return paddockMoves.find((move) => !move.endAt) || paddockMoves[0];
+    }, [paddockMoves]);
+
+    const gmdAtual = typeof (animal as any)?.gmd === 'number' ? (animal as any).gmd : null;
+    const gmdDelta = gmdAtual !== null && nutritionPlanMeta !== null ? gmdAtual - nutritionPlanMeta : null;
 
     return (
         <div 
@@ -254,6 +349,14 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
                                     {nutritionPlanMeta !== null && (
                                         <div className="text-xs text-gray-500">Meta GMD: {nutritionPlanMeta.toFixed(2)} kg</div>
                                     )}
+                                    {gmdAtual !== null && (
+                                        <div className="text-xs text-gray-500">GMD atual: {gmdAtual.toFixed(2)} kg</div>
+                                    )}
+                                    {gmdDelta !== null && (
+                                        <div className={`text-xs ${gmdDelta >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                            Delta: {gmdDelta >= 0 ? '+' : ''}{gmdDelta.toFixed(2)} kg
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
                                 <span>Sem plano ativo.</span>
@@ -272,6 +375,13 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
                                     aria-current={activeTab === 'weighing' ? 'page' : undefined}
                                 >
                                     Histórico de Pesagens
+                                </button>
+                                <button
+                                    onClick={() => setActiveTab('paddock')}
+                                    className={`${activeTab === 'paddock' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:hover:text-gray-300 dark:hover:border-gray-600'} whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm transition-colors`}
+                                    aria-current={activeTab === 'paddock' ? 'page' : undefined}
+                                >
+                                    Histórico de Pasto
                                 </button>
                                 <button
                                      onClick={() => setActiveTab('activity')}
@@ -338,6 +448,91 @@ const AnimalDetailModal: React.FC<AnimalDetailModalProps> = ({
                                                         <td className="px-4 py-3">{new Date(item.data).toLocaleDateString('pt-BR')}</td>
                                                         <td className="px-4 py-3">{item.peso} kg</td>
                                                         <td className="px-4 py-3 font-medium text-green-500">{item.gmd.toFixed(2)} kg</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </>
+                            )}
+                            {activeTab === 'paddock' && (
+                                <>
+                                    <div className="mb-4 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600 dark:border-gray-700 dark:bg-dark-card dark:text-gray-300">
+                                        <div className="text-xs uppercase text-gray-400">Pasto atual</div>
+                                        <div className="font-semibold text-gray-900 dark:text-white">
+                                            {currentPaddockMove?.paddockName || '—'}
+                                        </div>
+                                        <div className="text-xs text-gray-500">
+                                            Entrada: {currentPaddockMove?.startAt ? new Date(currentPaddockMove.startAt).toLocaleDateString('pt-BR') : '—'}
+                                        </div>
+                                    </div>
+                                    <form onSubmit={handleAddPaddockMove} className="mb-4 flex flex-wrap items-end gap-3">
+                                        <div className="flex flex-col">
+                                            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Pasto</label>
+                                            <select
+                                                value={movePaddockId}
+                                                onChange={(event) => setMovePaddockId(event.target.value)}
+                                                className="mt-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary dark:border-gray-600 dark:bg-dark-card"
+                                                required
+                                            >
+                                                <option value="">Selecione</option>
+                                                {paddockOptions.length === 0 && (
+                                                    <option value="" disabled>Cadastre pastos na fazenda</option>
+                                                )}
+                                                {paddockOptions.map((paddock) => (
+                                                    <option key={paddock.id} value={paddock.id}>{paddock.name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Entrada</label>
+                                            <input
+                                                type="date"
+                                                value={moveStartAt}
+                                                onChange={(event) => setMoveStartAt(event.target.value)}
+                                                className="mt-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary dark:border-gray-600 dark:bg-dark-card"
+                                            />
+                                        </div>
+                                        <div className="flex flex-col flex-1 min-w-[160px]">
+                                            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Observações</label>
+                                            <input
+                                                type="text"
+                                                value={moveNotes}
+                                                onChange={(event) => setMoveNotes(event.target.value)}
+                                                className="mt-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary dark:border-gray-600 dark:bg-dark-card"
+                                                placeholder="Opcional"
+                                            />
+                                        </div>
+                                        <button
+                                            type="submit"
+                                            className="h-10 rounded-lg bg-primary px-4 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
+                                            disabled={isSavingPaddockMove}
+                                        >
+                                            {isSavingPaddockMove ? 'Salvando...' : 'Mover'}
+                                        </button>
+                                    </form>
+                                    {paddockMoveError && (
+                                        <p className="mb-4 text-sm text-red-600 dark:text-red-400">{paddockMoveError}</p>
+                                    )}
+                                    {isLoadingPaddockMoves ? (
+                                        <p className="text-sm text-gray-500 dark:text-gray-400">Carregando movimentações...</p>
+                                    ) : paddockMoves.length === 0 ? (
+                                        <p className="text-sm text-gray-500 dark:text-gray-400">Nenhuma movimentação de pasto registrada.</p>
+                                    ) : (
+                                        <table className="w-full text-sm text-left">
+                                            <thead className="text-xs text-gray-700 uppercase bg-gray-100 dark:bg-gray-700 dark:text-gray-400">
+                                                <tr>
+                                                    <th scope="col" className="px-4 py-3">Pasto</th>
+                                                    <th scope="col" className="px-4 py-3">Entrada</th>
+                                                    <th scope="col" className="px-4 py-3">Saída</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {paddockMoves.map((move) => (
+                                                    <tr key={move.id} className="border-b dark:border-gray-700">
+                                                        <td className="px-4 py-3">{move.paddockName || '—'}</td>
+                                                        <td className="px-4 py-3">{new Date(move.startAt).toLocaleDateString('pt-BR')}</td>
+                                                        <td className="px-4 py-3">{move.endAt ? new Date(move.endAt).toLocaleDateString('pt-BR') : '—'}</td>
                                                     </tr>
                                                 ))}
                                             </tbody>

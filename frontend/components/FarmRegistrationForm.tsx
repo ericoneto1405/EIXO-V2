@@ -8,7 +8,7 @@ let paddockIdCounter = 0;
 interface PaddockInput {
     id: string;
     name: string;
-    size: string; // Use string to handle empty inputs
+    areaHa: string; // Use string to handle empty inputs
 }
 
 interface FarmRegistrationFormProps {
@@ -30,7 +30,7 @@ const FarmRegistrationForm: React.FC<FarmRegistrationFormProps> = ({ onFarmCreat
     const nameInputRef = useRef<HTMLInputElement | null>(null);
 
     const totalPaddockSize = useMemo(() => {
-        return paddocks.reduce((sum, paddock) => sum + (parseFloat(paddock.size) || 0), 0);
+        return paddocks.reduce((sum, paddock) => sum + (parseFloat(paddock.areaHa) || 0), 0);
     }, [paddocks]);
 
     const farmSizeFloat = parseFloat(farmSize) || 0;
@@ -47,7 +47,7 @@ const FarmRegistrationForm: React.FC<FarmRegistrationFormProps> = ({ onFarmCreat
 
     const handleAddPaddock = () => {
         const paddockNumber = paddocks.length + 1;
-        setPaddocks([...paddocks, { id: `paddock-${paddockIdCounter++}`, name: `Pasto ${paddockNumber}`, size: '' }]);
+        setPaddocks([...paddocks, { id: `paddock-${paddockIdCounter++}`, name: `Pasto ${paddockNumber}`, areaHa: '' }]);
     };
 
     const handleRemovePaddock = (id: string) => {
@@ -55,7 +55,7 @@ const FarmRegistrationForm: React.FC<FarmRegistrationFormProps> = ({ onFarmCreat
     };
 
     const handlePaddockSizeChange = (id: string, value: string) => {
-        setPaddocks(paddocks.map(p => p.id === id ? { ...p, size: value } : p));
+        setPaddocks(paddocks.map(p => p.id === id ? { ...p, areaHa: value } : p));
     };
 
     const handlePaddockNameChange = (id: string, value: string) => {
@@ -81,18 +81,18 @@ const FarmRegistrationForm: React.FC<FarmRegistrationFormProps> = ({ onFarmCreat
         const payloadPaddocks: Paddock[] = paddocks.map((p) => ({
             id: p.id,
             name: p.name.trim(),
-            size: parseFloat(p.size) || 0,
+            areaHa: parseFloat(p.areaHa) || 0,
         }));
 
         const hasInvalidPaddock = payloadPaddocks.some(
-            (p) => !p.name || Number.isNaN(p.size) || p.size <= 0,
+            (p) => !p.name || Number.isNaN(p.areaHa ?? 0) || (p.areaHa ?? 0) <= 0,
         );
         if (!farmName.trim() || !farmCity.trim()) {
             setSubmitError('Informe nome e cidade da fazenda.');
             return;
         }
         if (!payloadPaddocks.length || hasInvalidPaddock) {
-            setSubmitError('Pastos precisam de nome e tamanho válidos.');
+            setSubmitError('Pastos precisam de nome e área válidos.');
             return;
         }
         if (farmSizeFloat <= 0) {
@@ -205,11 +205,11 @@ const FarmRegistrationForm: React.FC<FarmRegistrationFormProps> = ({ onFarmCreat
                                         />
                                     </div>
                                     <div>
-                                        <label htmlFor={`paddock-size-${paddock.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300">Tamanho (ha)</label>
+                                        <label htmlFor={`paddock-size-${paddock.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300">Área (ha)</label>
                                         <input
                                             type="number"
                                             id={`paddock-size-${paddock.id}`}
-                                            value={paddock.size}
+                                            value={paddock.areaHa}
                                             onChange={(e) => handlePaddockSizeChange(paddock.id, e.target.value)}
                                             min="0"
                                             step="0.01"

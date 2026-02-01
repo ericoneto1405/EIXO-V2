@@ -11,6 +11,8 @@ import {
     listAnimals,
     listLots,
 } from '../adapters/herdApi';
+import { buildApiUrl } from '../api';
+import type { Paddock } from '../types';
 
 type TabKey = 'overview' | 'lots' | 'animals' | 'weighings' | 'reports' | 'settings';
 
@@ -106,10 +108,44 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
         categoria: '',
         observacoes: '',
         lotId: '',
+        paddockId: '',
+        paddockStartAt: '',
     });
     const [lotForm, setLotForm] = useState({ name: '', notes: '' });
+    const [paddocks, setPaddocks] = useState<Paddock[]>([]);
 
     const isPo = resolvedMode === 'PO';
+
+    useEffect(() => {
+        let isActive = true;
+        const loadPaddocks = async () => {
+            if (!farmId) {
+                if (isActive) {
+                    setPaddocks([]);
+                }
+                return;
+            }
+            try {
+                const response = await fetch(buildApiUrl(`/pastos?farmId=${farmId}`), { credentials: 'include' });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(payload?.message || 'Erro ao carregar pastos.');
+                }
+                if (isActive) {
+                    setPaddocks(payload.items || []);
+                }
+            } catch (error) {
+                console.error(error);
+                if (isActive) {
+                    setPaddocks([]);
+                }
+            }
+        };
+        loadPaddocks();
+        return () => {
+            isActive = false;
+        };
+    }, [farmId]);
 
     const tabs = useMemo(() => {
         return [
@@ -222,6 +258,8 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
             categoria: '',
             observacoes: '',
             lotId: '',
+            paddockId: '',
+            paddockStartAt: '',
         });
     };
 
@@ -307,6 +345,10 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
             setAnimalFormError('Selecione uma fazenda para criar animal.');
             return;
         }
+        if (!animalForm.paddockId) {
+            setAnimalFormError('Selecione o pasto do animal.');
+            return;
+        }
         if (isPo) {
             if (!animalForm.nome.trim() || !animalForm.raca.trim()) {
                 setAnimalFormError('Preencha nome e raça.');
@@ -337,6 +379,8 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
                     categoria: animalForm.categoria.trim() || undefined,
                     observacoes: animalForm.observacoes.trim() || undefined,
                     lotId: animalForm.lotId || undefined,
+                    paddockId: animalForm.paddockId,
+                    paddockStartAt: animalForm.paddockStartAt || undefined,
                 }
                 : {
                     brinco: animalForm.brinco.trim(),
@@ -345,6 +389,8 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
                     dataNascimento: animalForm.dataNascimento,
                     pesoAtual: parsedPeso ?? undefined,
                     lotId: animalForm.lotId || undefined,
+                    paddockId: animalForm.paddockId,
+                    paddockStartAt: animalForm.paddockStartAt || undefined,
                 };
             await createAnimal(farmId, resolvedMode, payload);
             closeAnimalForm();
@@ -387,21 +433,23 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
                             <th scope="col" className="px-6 py-3">Raça</th>
                             <th scope="col" className="px-6 py-3">Sexo</th>
                             <th scope="col" className="px-6 py-3">Idade</th>
+                            <th scope="col" className="px-6 py-3">Pasto</th>
                             <th scope="col" className="px-6 py-3">Peso Atual</th>
                             <th scope="col" className="px-6 py-3">GMD</th>
+                            <th scope="col" className="px-6 py-3">Nutrição</th>
                             <th scope="col" className="px-6 py-3 text-center">Ações</th>
                         </tr>
                     </thead>
                     <tbody>
                         {isLoading ? (
                             <tr>
-                                <td colSpan={7} className="px-6 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                                <td colSpan={9} className="px-6 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                                     Carregando animais...
                                 </td>
                             </tr>
                         ) : filteredAnimals.length === 0 ? (
                             <tr>
-                                <td colSpan={7} className="px-6 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                                <td colSpan={9} className="px-6 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                                     <div className="flex flex-col items-center gap-4">
                                         <div className="space-y-1">
                                             <p className="text-base font-semibold text-gray-900 dark:text-white">
@@ -440,6 +488,7 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
                                     <td className="px-6 py-4">{animal.raca}</td>
                                     <td className="px-6 py-4">{animal.sexo}</td>
                                     <td className="px-6 py-4">{calculateAge(animal.dataNascimento)}</td>
+                                    <td className="px-6 py-4">{animal.currentPaddockName || '—'}</td>
                                     <td className="px-6 py-4">
                                         {animal.pesoAtual !== null && animal.pesoAtual !== undefined
                                             ? `${animal.pesoAtual} kg`
@@ -447,6 +496,9 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
                                     </td>
                                     <td className="px-6 py-4 font-medium text-green-500">
                                         {formatNumber(animal.gmd)} kg
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        {animal.nutritionPlan?.nome || '—'}
                                     </td>
                                     <td className="px-6 py-4 text-center" onClick={(event) => event.stopPropagation()}>
                                         <button
@@ -750,6 +802,34 @@ const HerdModule: React.FC<HerdModuleProps> = ({ farmId, mode, herdType }) => {
                                     type="number"
                                     value={animalForm.pesoAtual}
                                     onChange={(event) => setAnimalForm((prev) => ({ ...prev, pesoAtual: event.target.value }))}
+                                    className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary dark:border-gray-600 dark:bg-dark-card"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Pasto</label>
+                                <select
+                                    value={animalForm.paddockId}
+                                    onChange={(event) => setAnimalForm((prev) => ({ ...prev, paddockId: event.target.value }))}
+                                    className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary dark:border-gray-600 dark:bg-dark-card"
+                                    required
+                                >
+                                    <option value="">Selecione um pasto</option>
+                                    {paddocks.length === 0 && (
+                                        <option value="" disabled>
+                                            Cadastre pastos na fazenda
+                                        </option>
+                                    )}
+                                    {paddocks.map((paddock) => (
+                                        <option key={paddock.id} value={paddock.id}>{paddock.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Entrada no pasto</label>
+                                <input
+                                    type="date"
+                                    value={animalForm.paddockStartAt}
+                                    onChange={(event) => setAnimalForm((prev) => ({ ...prev, paddockStartAt: event.target.value }))}
                                     className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary dark:border-gray-600 dark:bg-dark-card"
                                 />
                             </div>

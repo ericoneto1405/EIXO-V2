@@ -41,6 +41,7 @@ model Farm {
   semenBatches SemenBatch[]
   embryoBatches EmbryoBatch[]
   poWeighings PoWeighing[]
+  paddockMoves PaddockMove[]
   nutritionPlans NutritionPlan[]
   nutritionAssignments NutritionAssignment[]
   user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -50,11 +51,20 @@ model Farm {
 }
 
 model Paddock {
-  id     String @id @default(uuid())
-  name   String
-  size   Float
-  farm   Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  farmId String
+  id               String        @id @default(uuid())
+  name             String
+  areaHa           Float?        @map("size")
+  capacity         Float?
+  active           Boolean       @default(true)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  farm             Farm          @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId           String
+  paddockMoves     PaddockMove[]
+  currentAnimals   Animal[]      @relation("AnimalCurrentPaddock")
+  currentPoAnimals PoAnimal[]    @relation("PoAnimalCurrentPaddock")
+
+  @@index([farmId])
 }
 
 enum AnimalSexo {
@@ -83,22 +93,27 @@ model Animal {
   sexo           AnimalSexo
   dataNascimento DateTime
   pesoAtual      Float
-  gmd            Float
+  gmd            Float?
+  gmd30          Float?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   farm           Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
   farmId         String
   lot            Lot?         @relation(fields: [lotId], references: [id], onDelete: SetNull)
   lotId          String?
+  currentPaddock   Paddock    @relation("AnimalCurrentPaddock", fields: [currentPaddockId], references: [id], onDelete: Restrict)
+  currentPaddockId String
   pesagens       Weighing[]
   exposures      Exposure[]
   reproEvents    ReproEvent[]
   selectionDecisions SelectionDecision[]
   nutritionAssignments NutritionAssignment[]
+  paddockMoves   PaddockMove[]
 
   @@unique([farmId, brinco])
   @@index([farmId])
   @@index([lotId])
+  @@index([currentPaddockId])
 }
 
 model Weighing {
@@ -240,9 +255,12 @@ model PoAnimal {
   sexo           AnimalSexo
   dataNascimento DateTime?
   pesoAtual      Float       @default(0)
-  gmd            Float       @default(0)
+  gmd            Float?
+  gmd30          Float?
   lot            PoLot?      @relation(fields: [lotId], references: [id], onDelete: SetNull)
   lotId          String?
+  currentPaddock   Paddock   @relation("PoAnimalCurrentPaddock", fields: [currentPaddockId], references: [id], onDelete: Restrict)
+  currentPaddockId String
   registro       String?
   categoria      String?
   observacoes    String?
@@ -253,10 +271,12 @@ model PoAnimal {
   embryoDonorBatches EmbryoBatch[] @relation("EmbryoDonor")
   embryoSireBatches EmbryoBatch[] @relation("EmbryoSire")
   nutritionAssignments NutritionAssignment[]
+  paddockMoves   PaddockMove[]
 
   @@index([farmId])
   @@unique([farmId, brinco])
   @@index([lotId])
+  @@index([currentPaddockId])
 }
 
 model PoLot {
@@ -414,4 +434,26 @@ model EmbryoMove {
   createdAt     DateTime      @default(now())
 
   @@index([embryoBatchId])
+}
+
+model PaddockMove {
+  id         String   @id @default(uuid())
+  farm       Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId     String
+  paddock    Paddock  @relation(fields: [paddockId], references: [id], onDelete: Cascade)
+  paddockId  String
+  animal     Animal?  @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalId   String?
+  poAnimal   PoAnimal? @relation(fields: [poAnimalId], references: [id], onDelete: Cascade)
+  poAnimalId String?
+  startAt    DateTime
+  endAt      DateTime?
+  notes      String?
+  createdAt  DateTime @default(now())
+
+  @@index([farmId])
+  @@index([paddockId])
+  @@index([animalId])
+  @@index([poAnimalId])
+  @@index([farmId, startAt])
 }

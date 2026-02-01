@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { buildApiUrl } from '../api';
+import type { Paddock } from '../types';
 import HerdModule from './HerdModule';
 
 type AnimalSexo = 'MACHO' | 'FEMEA';
@@ -20,6 +21,7 @@ interface PoAnimal {
     registro?: string | null;
     categoria?: string | null;
     observacoes?: string | null;
+    currentPaddockId?: string | null;
 }
 
 interface SemenBatch {
@@ -72,6 +74,7 @@ const GeneticsPlantelPO: React.FC<GeneticsPlantelPOProps> = ({ farmId, mode = 'f
     const [embryoBatches, setEmbryoBatches] = useState<EmbryoBatch[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
+    const [paddocks, setPaddocks] = useState<Paddock[]>([]);
 
     useEffect(() => {
         setActiveTab(availableTabs[0]);
@@ -92,6 +95,8 @@ const GeneticsPlantelPO: React.FC<GeneticsPlantelPOProps> = ({ farmId, mode = 'f
         registro: '',
         categoria: '',
         observacoes: '',
+        paddockId: '',
+        paddockStartAt: '',
     });
     const [animalError, setAnimalError] = useState<string | null>(null);
     const [isSavingAnimal, setIsSavingAnimal] = useState(false);
@@ -155,6 +160,8 @@ const GeneticsPlantelPO: React.FC<GeneticsPlantelPOProps> = ({ farmId, mode = 'f
             registro: '',
             categoria: '',
             observacoes: '',
+            paddockId: '',
+            paddockStartAt: '',
         });
     };
 
@@ -235,6 +242,37 @@ const GeneticsPlantelPO: React.FC<GeneticsPlantelPOProps> = ({ farmId, mode = 'f
         loadResources();
     }, [activeTab, loadResources, mode]);
 
+    useEffect(() => {
+        let isActive = true;
+        const loadPaddocks = async () => {
+            if (!farmId) {
+                if (isActive) {
+                    setPaddocks([]);
+                }
+                return;
+            }
+            try {
+                const response = await fetch(buildApiUrl(`/pastos?farmId=${farmId}`), { credentials: 'include' });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(payload?.message || 'Erro ao carregar pastos.');
+                }
+                if (isActive) {
+                    setPaddocks(payload.items || []);
+                }
+            } catch (error) {
+                console.error(error);
+                if (isActive) {
+                    setPaddocks([]);
+                }
+            }
+        };
+        loadPaddocks();
+        return () => {
+            isActive = false;
+        };
+    }, [farmId]);
+
     const filteredAnimals = useMemo(() => {
         if (!searchAnimals.trim()) {
             return poAnimals;
@@ -286,6 +324,8 @@ const GeneticsPlantelPO: React.FC<GeneticsPlantelPOProps> = ({ farmId, mode = 'f
                 registro: animal.registro || '',
                 categoria: animal.categoria || '',
                 observacoes: animal.observacoes || '',
+                paddockId: animal.currentPaddockId || '',
+                paddockStartAt: '',
             });
         } else {
             setEditingAnimal(null);
@@ -360,6 +400,10 @@ const GeneticsPlantelPO: React.FC<GeneticsPlantelPOProps> = ({ farmId, mode = 'f
     const handleSaveAnimal = async (event: React.FormEvent) => {
         event.preventDefault();
         if (!farmId) {
+            return;
+        }
+        if (!animalForm.paddockId) {
+            setAnimalError('Selecione o pasto do animal.');
             return;
         }
         setIsSavingAnimal(true);
@@ -765,6 +809,30 @@ const GeneticsPlantelPO: React.FC<GeneticsPlantelPOProps> = ({ farmId, mode = 'f
                                     placeholder="Registro"
                                     value={animalForm.registro}
                                     onChange={(event) => setAnimalForm((prev) => ({ ...prev, registro: event.target.value }))}
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                                <select
+                                    className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                                    value={animalForm.paddockId}
+                                    onChange={(event) => setAnimalForm((prev) => ({ ...prev, paddockId: event.target.value }))}
+                                    required
+                                >
+                                    <option value="">Pasto</option>
+                                    {paddocks.length === 0 && (
+                                        <option value="" disabled>
+                                            Cadastre pastos na fazenda
+                                        </option>
+                                    )}
+                                    {paddocks.map((paddock) => (
+                                        <option key={paddock.id} value={paddock.id}>{paddock.name}</option>
+                                    ))}
+                                </select>
+                                <input
+                                    type="date"
+                                    className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                                    value={animalForm.paddockStartAt}
+                                    onChange={(event) => setAnimalForm((prev) => ({ ...prev, paddockStartAt: event.target.value }))}
                                 />
                             </div>
                             <input

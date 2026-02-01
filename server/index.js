@@ -146,9 +146,14 @@ const serializeAnimal = (animal) => ({
     sexo: formatSexoLabel(animal.sexo),
     dataNascimento: animal.dataNascimento.toISOString(),
     pesoAtual: animal.pesoAtual,
-    gmd: animal.gmd,
+    gmd: animal.gmd ?? null,
+    gmdLast: animal.gmd ?? null,
+    gmd30: animal.gmd30 ?? null,
     farmId: animal.farmId,
     lotId: animal.lotId,
+    currentPaddockId: animal.currentPaddockId,
+    currentPaddockName: animal.currentPaddock?.name || null,
+    nutritionPlan: animal.currentNutritionPlan || null,
     createdAt: animal.createdAt.toISOString(),
     updatedAt: animal.updatedAt.toISOString(),
 });
@@ -186,13 +191,31 @@ const serializePoAnimal = (animal) => ({
     sexo: animal.sexo,
     dataNascimento: animal.dataNascimento ? animal.dataNascimento.toISOString() : null,
     pesoAtual: animal.pesoAtual ?? 0,
-    gmd: animal.gmd ?? 0,
+    gmd: animal.gmd ?? null,
+    gmdLast: animal.gmd ?? null,
+    gmd30: animal.gmd30 ?? null,
     lotId: animal.lotId || null,
+    currentPaddockId: animal.currentPaddockId,
+    currentPaddockName: animal.currentPaddock?.name || null,
+    nutritionPlan: animal.currentNutritionPlan || null,
     registro: animal.registro,
     categoria: animal.categoria,
     observacoes: animal.observacoes,
     createdAt: animal.createdAt.toISOString(),
     updatedAt: animal.updatedAt.toISOString(),
+});
+
+const serializePaddockMove = (move) => ({
+    id: move.id,
+    farmId: move.farmId,
+    paddockId: move.paddockId,
+    paddockName: move.paddock?.name || null,
+    animalId: move.animalId || null,
+    poAnimalId: move.poAnimalId || null,
+    startAt: move.startAt.toISOString(),
+    endAt: move.endAt ? move.endAt.toISOString() : null,
+    notes: move.notes || null,
+    createdAt: move.createdAt.toISOString(),
 });
 
 const serializeSemenBatch = (batch) => ({
@@ -284,9 +307,148 @@ const serializeEmbryoBatch = (batch) => ({
     updatedAt: batch.updatedAt.toISOString(),
 });
 
+const serializePaddock = (paddock) => ({
+    id: paddock.id,
+    farmId: paddock.farmId,
+    name: paddock.name,
+    areaHa: paddock.areaHa ?? null,
+    capacity: paddock.capacity ?? null,
+    active: paddock.active ?? true,
+    createdAt: paddock.createdAt?.toISOString?.() ?? null,
+    updatedAt: paddock.updatedAt?.toISOString?.() ?? null,
+});
+
 const diffDays = (later, earlier) => {
     const diffMs = later.getTime() - earlier.getTime();
     return Math.round(diffMs / (1000 * 60 * 60 * 24));
+};
+
+const diffDaysFloat = (later, earlier) => {
+    return (later.getTime() - earlier.getTime()) / (1000 * 60 * 60 * 24);
+};
+
+const normalizeWeighingsByDay = (weighings) => {
+    if (!Array.isArray(weighings)) {
+        return [];
+    }
+    const sorted = weighings
+        .filter((item) => item && item.date instanceof Date && Number.isFinite(item.weight))
+        .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    const byDay = new Map();
+    sorted.forEach((item) => {
+        const key = item.date.toISOString().slice(0, 10);
+        byDay.set(key, item);
+    });
+
+    return Array.from(byDay.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+};
+
+const calculateGmdMetrics = (weighings) => {
+    const normalized = normalizeWeighingsByDay(weighings);
+    if (normalized.length < 2) {
+        return { gmdLast: null, gmd30: null };
+    }
+
+    const last = normalized[normalized.length - 1];
+    const previous = normalized[normalized.length - 2];
+    const lastIntervalDays = diffDaysFloat(last.date, previous.date);
+    const gmdLast = lastIntervalDays > 0 ? (last.weight - previous.weight) / lastIntervalDays : null;
+
+    const windowStart = new Date(last.date.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const window = normalized.filter((item) => item.date >= windowStart && item.date <= last.date);
+    let gmd30 = null;
+    if (window.length >= 2) {
+        const oldest = window[0];
+        const windowDays = diffDaysFloat(last.date, oldest.date);
+        if (windowDays > 0) {
+            gmd30 = (last.weight - oldest.weight) / windowDays;
+        }
+    }
+
+    return { gmdLast, gmd30 };
+};
+
+const moveAnimalBetweenPaddocks = async ({ animalId, paddockId, startAt, notes, userId, isPo }) => {
+    const animalModel = isPo ? prisma.poAnimal : prisma.animal;
+    const moveWhere = isPo ? { poAnimalId: animalId } : { animalId };
+
+    const animal = await animalModel.findFirst({
+        where: { id: animalId, farm: { userId } },
+    });
+    if (!animal) {
+        return { error: { status: 404, message: isPo ? 'Animal P.O. não encontrado.' : 'Animal não encontrado.' } };
+    }
+
+    const paddock = await prisma.paddock.findFirst({
+        where: { id: paddockId, farmId: animal.farmId, farm: { userId } },
+    });
+    if (!paddock) {
+        return { error: { status: 400, message: 'Pasto inválido para esta fazenda.' } };
+    }
+
+    const moveStartAt = startAt ? parseDateValue(startAt) : new Date();
+    if (startAt && !moveStartAt) {
+        return { error: { status: 400, message: 'Data de entrada no pasto inválida.' } };
+    }
+    const trimmedNotes = typeof notes === 'string' && notes.trim() ? notes.trim() : null;
+
+    try {
+        const result = await prisma.$transaction(async (tx) => {
+            const updateModel = isPo ? tx.poAnimal : tx.animal;
+            const openMove = await tx.paddockMove.findFirst({
+                where: { ...moveWhere, endAt: null },
+                orderBy: { startAt: 'desc' },
+            });
+
+            if (openMove && moveStartAt <= openMove.startAt) {
+                const error = new Error('MOVE_DATE_BEFORE_OPEN');
+                error.code = 'MOVE_DATE_BEFORE_OPEN';
+                throw error;
+            }
+
+            if (openMove && animal.currentPaddockId === paddockId) {
+                const error = new Error('SAME_PADDOCK');
+                error.code = 'SAME_PADDOCK';
+                throw error;
+            }
+
+            if (openMove) {
+                await tx.paddockMove.update({
+                    where: { id: openMove.id },
+                    data: { endAt: moveStartAt },
+                });
+            }
+
+            const created = await tx.paddockMove.create({
+                data: {
+                    farmId: animal.farmId,
+                    paddockId,
+                    ...(isPo ? { poAnimalId: animalId } : { animalId }),
+                    startAt: moveStartAt,
+                    notes: trimmedNotes,
+                },
+                include: { paddock: true },
+            });
+
+            await updateModel.update({
+                where: { id: animal.id },
+                data: { currentPaddockId: paddockId },
+            });
+
+            return { move: created, fromPaddockId: openMove?.paddockId || null, toPaddockId: paddockId };
+        });
+
+        return { result };
+    } catch (error) {
+        if (error?.code === 'MOVE_DATE_BEFORE_OPEN') {
+            return { error: { status: 400, message: 'Data da movimentação deve ser posterior à última entrada no pasto.' } };
+        }
+        if (error?.code === 'SAME_PADDOCK') {
+            return { error: { status: 409, message: 'Animal já está alocado neste pasto.' } };
+        }
+        throw error;
+    }
 };
 
 const calculateReproKpis = async ({ animalId, farmId, seasonId }) => {
@@ -645,7 +807,10 @@ const requireAuth = async (req, res, next) => {
     }
 };
 
-app.use(['/farms', '/lots', '/animals', '/users', '/seasons', '/repro-events', '/genetics', '/po', '/nutrition'], requireAuth);
+app.use(
+    ['/farms', '/lots', '/animals', '/users', '/seasons', '/repro-events', '/genetics', '/po', '/nutrition', '/pastos'],
+    requireAuth,
+);
 
 app.post('/auth/login', async (req, res) => {
     const { email, password, rememberMe } = req.body || {};
@@ -795,9 +960,14 @@ app.get('/farms', async (req, res) => {
     try {
         const farms = await prisma.farm.findMany({
             where: { userId: req.user.id },
-            include: { paddocks: true },
+            include: { paddocks: { orderBy: { createdAt: 'asc' } } },
         });
-        return res.json({ farms });
+        return res.json({
+            farms: farms.map((farm) => ({
+                ...farm,
+                paddocks: farm.paddocks.map(serializePaddock),
+            })),
+        });
     } catch (error) {
         console.error(error);
         return res.status(500).json({ message: 'Erro ao listar fazendas.' });
@@ -815,24 +985,45 @@ app.post('/farms', async (req, res) => {
     const normalizedPaddocks = Array.isArray(paddocks)
         ? paddocks
               .map((paddock) => {
-                  const paddockName = (paddock?.name || '').trim();
-                  const paddockSize = Number(paddock?.size);
-                  if (!paddockName || Number.isNaN(paddockSize) || paddockSize <= 0) {
+                  const paddockName = (paddock?.name || paddock?.nome || '').trim();
+                  const areaRaw = paddock?.areaHa ?? paddock?.size ?? paddock?.area;
+                  const areaValue = areaRaw === undefined || areaRaw === null || areaRaw === ''
+                      ? null
+                      : Number(areaRaw);
+                  const capacityValue = parseNumber(paddock?.capacity);
+                  const activeValue = paddock?.active === false ? false : true;
+                  if (!paddockName) {
+                      return null;
+                  }
+                  if (areaValue !== null && (Number.isNaN(areaValue) || areaValue <= 0)) {
                       return null;
                   }
                   return {
                       name: paddockName,
-                      size: paddockSize,
+                      areaHa: areaValue,
+                      capacity: capacityValue,
+                      active: activeValue,
                   };
               })
               .filter(Boolean)
         : [];
 
     if (Array.isArray(paddocks) && paddocks.length && normalizedPaddocks.length === 0) {
-        return res.status(400).json({ message: 'Pastos devem ter nome e tamanho válidos.' });
+        return res.status(400).json({ message: 'Pastos devem ter nome e área válidos.' });
     }
 
     try {
+        const paddocksToCreate = normalizedPaddocks.length
+            ? normalizedPaddocks
+            : [
+                  {
+                      name: 'Pasto 01 - Principal',
+                      areaHa: parsedSize,
+                      capacity: null,
+                      active: true,
+                  },
+              ];
+
         const newFarm = await prisma.farm.create({
             data: {
                 name,
@@ -842,20 +1033,145 @@ app.post('/farms', async (req, res) => {
                 size: parsedSize,
                 notes: notes?.trim() || null,
                 userId: req.user.id,
-                ...(normalizedPaddocks.length
-                    ? {
-                          paddocks: {
-                              create: normalizedPaddocks,
-                          },
-                      }
-                    : {}),
+                paddocks: {
+                    create: paddocksToCreate,
+                },
             },
             include: { paddocks: true },
         });
-        return res.status(201).json({ farm: newFarm });
+        return res.status(201).json({
+            farm: {
+                ...newFarm,
+                paddocks: newFarm.paddocks.map(serializePaddock),
+            },
+        });
     } catch (error) {
         console.error(error);
         return res.status(500).json({ message: 'Erro ao salvar fazenda.' });
+    }
+});
+
+app.get('/pastos', async (req, res) => {
+    const { farmId, includeInactive } = req.query || {};
+    if (!farmId) {
+        return res.status(400).json({ message: 'Informe a fazenda para listar pastos.' });
+    }
+    try {
+        const farm = await prisma.farm.findFirst({
+            where: { id: String(farmId), userId: req.user.id },
+        });
+        if (!farm) {
+            return res.status(404).json({ message: 'Fazenda não encontrada.' });
+        }
+        const pastos = await prisma.paddock.findMany({
+            where: {
+                farmId: farm.id,
+                ...(includeInactive === 'true' ? {} : { active: true }),
+            },
+            orderBy: { createdAt: 'asc' },
+        });
+        return res.json({ items: pastos.map(serializePaddock), total: pastos.length });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao listar pastos.' });
+    }
+});
+
+app.post('/pastos', async (req, res) => {
+    const { farmId, nome, name, areaHa, size, capacity, ativo, active } = req.body || {};
+    const paddockName = (nome || name || '').trim();
+    if (!farmId || !paddockName) {
+        return res.status(400).json({ message: 'Informe fazenda e nome do pasto.' });
+    }
+    const areaRaw = areaHa ?? size;
+    const areaValue = areaRaw === undefined || areaRaw === null || areaRaw === '' ? null : Number(areaRaw);
+    if (areaValue !== null && (Number.isNaN(areaValue) || areaValue <= 0)) {
+        return res.status(400).json({ message: 'Área do pasto inválida.' });
+    }
+    const capacityValue = capacity === undefined || capacity === null || capacity === '' ? null : parseNumber(capacity);
+    if (capacity !== undefined && capacity !== null && capacity !== '' && (capacityValue === null || capacityValue <= 0)) {
+        return res.status(400).json({ message: 'Capacidade do pasto inválida.' });
+    }
+    const activeValue = ativo === false || active === false ? false : true;
+    try {
+        const farm = await prisma.farm.findFirst({
+            where: { id: String(farmId), userId: req.user.id },
+        });
+        if (!farm) {
+            return res.status(404).json({ message: 'Fazenda não encontrada.' });
+        }
+        const existing = await prisma.paddock.findFirst({
+            where: { farmId: farm.id, name: paddockName },
+        });
+        if (existing) {
+            return res.status(409).json({ message: 'Já existe um pasto com esse nome nesta fazenda.' });
+        }
+        const paddock = await prisma.paddock.create({
+            data: {
+                farmId: farm.id,
+                name: paddockName,
+                areaHa: areaValue,
+                capacity: capacityValue,
+                active: activeValue,
+            },
+        });
+        return res.status(201).json({ item: serializePaddock(paddock) });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao salvar pasto.' });
+    }
+});
+
+app.patch('/pastos/:id', async (req, res) => {
+    const { id } = req.params;
+    const { nome, name, areaHa, size, capacity, ativo, active } = req.body || {};
+    const paddockName = typeof nome === 'string' || typeof name === 'string' ? (nome || name).trim() : null;
+    const areaRaw = areaHa ?? size;
+    const areaValue = areaRaw === undefined || areaRaw === null || areaRaw === '' ? undefined : Number(areaRaw);
+    const capacityValue = capacity === undefined || capacity === null || capacity === '' ? undefined : parseNumber(capacity);
+    const activeValue = ativo === undefined && active === undefined ? undefined : !(ativo === false || active === false);
+    if (areaValue !== undefined && (Number.isNaN(areaValue) || areaValue <= 0)) {
+        return res.status(400).json({ message: 'Área do pasto inválida.' });
+    }
+    if (capacityValue !== undefined && (capacityValue === null || capacityValue <= 0)) {
+        return res.status(400).json({ message: 'Capacidade do pasto inválida.' });
+    }
+    try {
+        const paddock = await prisma.paddock.findFirst({
+            where: { id: String(id), farm: { userId: req.user.id } },
+        });
+        if (!paddock) {
+            return res.status(404).json({ message: 'Pasto não encontrado.' });
+        }
+        if (paddockName) {
+            const duplicate = await prisma.paddock.findFirst({
+                where: { farmId: paddock.farmId, name: paddockName, id: { not: paddock.id } },
+            });
+            if (duplicate) {
+                return res.status(409).json({ message: 'Já existe um pasto com esse nome nesta fazenda.' });
+            }
+        }
+        if (activeValue === false) {
+            const activeCount = await prisma.paddock.count({
+                where: { farmId: paddock.farmId, active: true },
+            });
+            if (activeCount <= 1) {
+                return res.status(400).json({ message: 'A fazenda precisa ter ao menos um pasto ativo.' });
+            }
+        }
+        const updated = await prisma.paddock.update({
+            where: { id: paddock.id },
+            data: {
+                ...(paddockName ? { name: paddockName } : {}),
+                ...(areaValue !== undefined ? { areaHa: areaValue } : {}),
+                ...(capacityValue !== undefined ? { capacity: capacityValue } : {}),
+                ...(activeValue !== undefined ? { active: activeValue } : {}),
+            },
+        });
+        return res.json({ item: serializePaddock(updated) });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao atualizar pasto.' });
     }
 });
 
@@ -1864,10 +2180,60 @@ app.get('/po/animals', async (req, res) => {
                 farmId: farm.id,
                 ...(lotId ? { lotId: String(lotId) } : {}),
             },
+            include: { currentPaddock: true },
             orderBy: { createdAt: 'desc' },
         });
 
-        return res.json({ animals: animals.map(serializePoAnimal) });
+        const now = new Date();
+        const animalIds = animals.map((animal) => animal.id);
+        const lotIds = animals.map((animal) => animal.lotId).filter(Boolean);
+        let nutritionByAnimal = new Map();
+        let nutritionByLot = new Map();
+        if (animalIds.length || lotIds.length) {
+            const assignments = await prisma.nutritionAssignment.findMany({
+                where: {
+                    farmId: farm.id,
+                    startAt: { lte: now },
+                    OR: [{ endAt: null }, { endAt: { gte: now } }],
+                    AND: [
+                        {
+                            OR: [
+                                ...(animalIds.length ? [{ poAnimalId: { in: animalIds } }] : []),
+                                ...(lotIds.length ? [{ poLotId: { in: lotIds } }] : []),
+                            ],
+                        },
+                    ],
+                },
+                include: { plan: true },
+            });
+            const pickLatest = (map, key, assignment) => {
+                if (!key) return;
+                const existing = map.get(key);
+                if (!existing || assignment.startAt > existing.startAt) {
+                    map.set(key, assignment);
+                }
+            };
+            assignments.forEach((assignment) => {
+                if (assignment.poAnimalId) {
+                    pickLatest(nutritionByAnimal, assignment.poAnimalId, assignment);
+                }
+                if (assignment.poLotId) {
+                    pickLatest(nutritionByLot, assignment.poLotId, assignment);
+                }
+            });
+        }
+
+        const enriched = animals.map((animal) => {
+            const direct = nutritionByAnimal.get(animal.id);
+            const lot = animal.lotId ? nutritionByLot.get(animal.lotId) : null;
+            const plan = direct?.plan || lot?.plan || null;
+            return {
+                ...animal,
+                currentNutritionPlan: plan ? serializeNutritionPlan(plan) : null,
+            };
+        });
+
+        return res.json({ animals: enriched.map(serializePoAnimal) });
     } catch (error) {
         console.error(error);
         return res.status(500).json({ message: 'Erro ao listar animais P.O.' });
@@ -1875,9 +2241,12 @@ app.get('/po/animals', async (req, res) => {
 });
 
 app.post('/po/animals', async (req, res) => {
-    const { farmId, lotId, brinco, nome, raca, sexo, dataNascimento, registro, categoria, observacoes, pesoAtual } = req.body || {};
+    const { farmId, lotId, brinco, nome, raca, sexo, dataNascimento, registro, categoria, observacoes, pesoAtual, paddockId, paddockStartAt } = req.body || {};
     if (!farmId || !nome?.trim() || !raca?.trim() || !sexo) {
         return res.status(400).json({ message: 'Dados obrigatórios do animal P.O. ausentes.' });
+    }
+    if (!paddockId) {
+        return res.status(400).json({ message: 'Pasto obrigatório para cadastrar o animal P.O.' });
     }
 
     const sexoEnum = normalizeSexo(sexo);
@@ -1921,21 +2290,46 @@ app.post('/po/animals', async (req, res) => {
             validLotId = lot.id;
         }
 
-        const animal = await prisma.poAnimal.create({
-            data: {
-                farmId: farm.id,
-                lotId: validLotId,
-                brinco: trimmedBrinco || null,
-                nome: nome.trim(),
-                raca: raca.trim(),
-                sexo: sexoEnum,
-                dataNascimento: birthDate,
-                pesoAtual: parsedPesoAtual,
-                gmd: 0,
-                registro: trimmedRegistro || null,
-                categoria: trimmedCategoria || null,
-                observacoes: trimmedObservacoes || null,
-            },
+        const paddock = await prisma.paddock.findFirst({
+            where: { id: paddockId, farmId: farm.id, farm: { userId: req.user.id } },
+        });
+        if (!paddock) {
+            return res.status(400).json({ message: 'Pasto inválido para esta fazenda.' });
+        }
+
+        const moveStartAt = paddockStartAt ? parseDateValue(paddockStartAt) : new Date();
+        if (paddockStartAt && !moveStartAt) {
+            return res.status(400).json({ message: 'Data de entrada no pasto inválida.' });
+        }
+
+        const animal = await prisma.$transaction(async (tx) => {
+            const created = await tx.poAnimal.create({
+                data: {
+                    farmId: farm.id,
+                    lotId: validLotId,
+                    brinco: trimmedBrinco || null,
+                    nome: nome.trim(),
+                    raca: raca.trim(),
+                    sexo: sexoEnum,
+                    dataNascimento: birthDate,
+                    pesoAtual: parsedPesoAtual,
+                    gmd: null,
+                    gmd30: null,
+                    registro: trimmedRegistro || null,
+                    categoria: trimmedCategoria || null,
+                    observacoes: trimmedObservacoes || null,
+                    currentPaddockId: paddockId,
+                },
+            });
+            await tx.paddockMove.create({
+                data: {
+                    farmId: farm.id,
+                    paddockId,
+                    poAnimalId: created.id,
+                    startAt: moveStartAt,
+                },
+            });
+            return created;
         });
 
         return res.status(201).json({ animal: serializePoAnimal(animal) });
@@ -2181,10 +2575,9 @@ const createPoWeighing = async (req, res, responseKey) => {
 
             let gmdValue = 0;
             if (previousWeighing) {
-                const diffMs = weighingDate.getTime() - previousWeighing.data.getTime();
-                const diffDays = diffMs / (1000 * 60 * 60 * 24);
-                if (diffDays > 0) {
-                    gmdValue = (parsedPeso - previousWeighing.peso) / diffDays;
+                const diffDaysValue = diffDaysFloat(weighingDate, previousWeighing.data);
+                if (diffDaysValue > 0) {
+                    gmdValue = (parsedPeso - previousWeighing.peso) / diffDaysValue;
                 }
             }
 
@@ -2199,27 +2592,21 @@ const createPoWeighing = async (req, res, responseKey) => {
                 },
             });
 
-            const latestWeighings = await tx.poWeighing.findMany({
+            const allWeighings = await tx.poWeighing.findMany({
                 where: { poAnimalId: id },
-                orderBy: { data: 'desc' },
-                take: 2,
+                orderBy: { data: 'asc' },
             });
-
-            const [latest, previous] = latestWeighings;
-            let animalGmd = 0;
-            if (latest && previous) {
-                const diffMs = latest.data.getTime() - previous.data.getTime();
-                const diffDays = diffMs / (1000 * 60 * 60 * 24);
-                if (diffDays > 0) {
-                    animalGmd = (latest.peso - previous.peso) / diffDays;
-                }
-            }
+            const metrics = calculateGmdMetrics(
+                allWeighings.map((row) => ({ date: row.data, weight: row.peso })),
+            );
+            const latest = allWeighings[allWeighings.length - 1];
 
             await tx.poAnimal.update({
                 where: { id: animal.id },
                 data: {
                     pesoAtual: latest?.peso ?? parsedPeso,
-                    gmd: animalGmd,
+                    gmd: metrics.gmdLast,
+                    gmd30: metrics.gmd30,
                 },
             });
 
@@ -3361,9 +3748,60 @@ app.get('/animals', async (req, res) => {
                 farm: { userId: req.user.id },
                 ...(lotId ? { lotId: String(lotId) } : {}),
             },
+            include: { currentPaddock: true },
             orderBy: { createdAt: 'desc' },
         });
-        return res.json({ animals: animals.map(serializeAnimal) });
+
+        const now = new Date();
+        const animalIds = animals.map((animal) => animal.id);
+        const lotIds = animals.map((animal) => animal.lotId).filter(Boolean);
+        let nutritionByAnimal = new Map();
+        let nutritionByLot = new Map();
+        if (animalIds.length || lotIds.length) {
+            const assignments = await prisma.nutritionAssignment.findMany({
+                where: {
+                    farmId: farm.id,
+                    startAt: { lte: now },
+                    OR: [{ endAt: null }, { endAt: { gte: now } }],
+                    AND: [
+                        {
+                            OR: [
+                                ...(animalIds.length ? [{ animalId: { in: animalIds } }] : []),
+                                ...(lotIds.length ? [{ lotId: { in: lotIds } }] : []),
+                            ],
+                        },
+                    ],
+                },
+                include: { plan: true },
+            });
+            const pickLatest = (map, key, assignment) => {
+                if (!key) return;
+                const existing = map.get(key);
+                if (!existing || assignment.startAt > existing.startAt) {
+                    map.set(key, assignment);
+                }
+            };
+            assignments.forEach((assignment) => {
+                if (assignment.animalId) {
+                    pickLatest(nutritionByAnimal, assignment.animalId, assignment);
+                }
+                if (assignment.lotId) {
+                    pickLatest(nutritionByLot, assignment.lotId, assignment);
+                }
+            });
+        }
+
+        const enriched = animals.map((animal) => {
+            const direct = nutritionByAnimal.get(animal.id);
+            const lot = animal.lotId ? nutritionByLot.get(animal.lotId) : null;
+            const plan = direct?.plan || lot?.plan || null;
+            return {
+                ...animal,
+                currentNutritionPlan: plan ? serializeNutritionPlan(plan) : null,
+            };
+        });
+
+        return res.json({ animals: enriched.map(serializeAnimal) });
     } catch (error) {
         console.error(error);
         return res.status(500).json({ message: 'Erro ao listar animais.' });
@@ -3371,10 +3809,13 @@ app.get('/animals', async (req, res) => {
 });
 
 app.post('/animals', async (req, res) => {
-    const { farmId, lotId, brinco, raca, sexo, dataNascimento, pesoAtual, gmd } = req.body || {};
+    const { farmId, lotId, brinco, raca, sexo, dataNascimento, pesoAtual, paddockId, paddockStartAt } = req.body || {};
 
     if (!farmId || !brinco?.trim() || !raca?.trim() || !sexo || !dataNascimento) {
         return res.status(400).json({ message: 'Dados obrigatórios do animal ausentes.' });
+    }
+    if (!paddockId) {
+        return res.status(400).json({ message: 'Pasto obrigatório para cadastrar o animal.' });
     }
 
     const sexoEnum = normalizeSexo(sexo);
@@ -3391,9 +3832,6 @@ app.post('/animals', async (req, res) => {
     if (parsedPesoAtual === null || parsedPesoAtual <= 0) {
         return res.status(400).json({ message: 'Peso atual inválido.' });
     }
-
-    const parsedGmd = parseNumber(gmd);
-    const gmdValue = parsedGmd !== null && parsedGmd >= 0 ? parsedGmd : 0;
 
     try {
         const farm = await prisma.farm.findFirst({
@@ -3414,17 +3852,42 @@ app.post('/animals', async (req, res) => {
             validLotId = lotId;
         }
 
-        const animal = await prisma.animal.create({
-            data: {
-                farmId,
-                lotId: validLotId,
-                brinco: brinco.trim(),
-                raca: raca.trim(),
-                sexo: sexoEnum,
-                dataNascimento: birthDate,
-                pesoAtual: parsedPesoAtual,
-                gmd: gmdValue,
-            },
+        const paddock = await prisma.paddock.findFirst({
+            where: { id: paddockId, farmId, farm: { userId: req.user.id } },
+        });
+        if (!paddock) {
+            return res.status(400).json({ message: 'Pasto inválido para esta fazenda.' });
+        }
+
+        const moveStartAt = paddockStartAt ? parseDateValue(paddockStartAt) : new Date();
+        if (paddockStartAt && !moveStartAt) {
+            return res.status(400).json({ message: 'Data de entrada no pasto inválida.' });
+        }
+
+        const animal = await prisma.$transaction(async (tx) => {
+            const created = await tx.animal.create({
+                data: {
+                    farmId,
+                    lotId: validLotId,
+                    brinco: brinco.trim(),
+                    raca: raca.trim(),
+                    sexo: sexoEnum,
+                    dataNascimento: birthDate,
+                    pesoAtual: parsedPesoAtual,
+                    gmd: null,
+                    gmd30: null,
+                    currentPaddockId: paddockId,
+                },
+            });
+            await tx.paddockMove.create({
+                data: {
+                    farmId,
+                    paddockId,
+                    animalId: created.id,
+                    startAt: moveStartAt,
+                },
+            });
+            return created;
         });
 
         return res.status(201).json({ animal: serializeAnimal(animal) });
@@ -3542,10 +4005,9 @@ app.post('/animals/:id/pesagens', async (req, res) => {
 
             let gmdValue = 0;
             if (previousWeighing) {
-                const diffMs = weighingDate.getTime() - previousWeighing.data.getTime();
-                const diffDays = diffMs / (1000 * 60 * 60 * 24);
-                if (diffDays > 0) {
-                    gmdValue = (parsedPeso - previousWeighing.peso) / diffDays;
+                const diffDaysValue = diffDaysFloat(weighingDate, previousWeighing.data);
+                if (diffDaysValue > 0) {
+                    gmdValue = (parsedPeso - previousWeighing.peso) / diffDaysValue;
                 }
             }
 
@@ -3558,27 +4020,22 @@ app.post('/animals/:id/pesagens', async (req, res) => {
                 },
             });
 
-            const latestWeighings = await tx.weighing.findMany({
+            const allWeighings = await tx.weighing.findMany({
                 where: { animalId: id },
-                orderBy: { data: 'desc' },
-                take: 2,
+                orderBy: { data: 'asc' },
             });
 
-            const [latest, previous] = latestWeighings;
-            let animalGmd = 0;
-            if (latest && previous) {
-                const diffMs = latest.data.getTime() - previous.data.getTime();
-                const diffDays = diffMs / (1000 * 60 * 60 * 24);
-                if (diffDays > 0) {
-                    animalGmd = (latest.peso - previous.peso) / diffDays;
-                }
-            }
+            const metrics = calculateGmdMetrics(
+                allWeighings.map((row) => ({ date: row.data, weight: row.peso })),
+            );
+            const latest = allWeighings[allWeighings.length - 1];
 
             await tx.animal.update({
                 where: { id: animal.id },
                 data: {
                     pesoAtual: latest?.peso ?? parsedPeso,
-                    gmd: animalGmd,
+                    gmd: metrics.gmdLast,
+                    gmd30: metrics.gmd30,
                 },
             });
 
@@ -3599,6 +4056,185 @@ app.post('/animals/:id/pesagens', async (req, res) => {
         }
         console.error(error);
         return res.status(500).json({ message: 'Erro ao salvar pesagem.' });
+    }
+});
+
+app.get('/animals/:id/paddock-moves', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const animal = await prisma.animal.findFirst({
+            where: { id, farm: { userId: req.user.id } },
+        });
+        if (!animal) {
+            return res.status(404).json({ message: 'Animal não encontrado.' });
+        }
+
+        const moves = await prisma.paddockMove.findMany({
+            where: { animalId: id },
+            include: { paddock: true },
+            orderBy: { startAt: 'desc' },
+        });
+
+        const items = moves.map(serializePaddockMove);
+        return res.json({ moves: items, items, total: items.length });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao listar movimentações de pasto.' });
+    }
+});
+
+app.post('/animals/:id/paddock-moves', async (req, res) => {
+    const { id } = req.params;
+    const { paddockId, startAt, notes } = req.body || {};
+
+    try {
+        if (!paddockId) {
+            return res.status(400).json({ message: 'Pasto obrigatório para movimentação.' });
+        }
+        const { error, result } = await moveAnimalBetweenPaddocks({
+            animalId: id,
+            paddockId,
+            startAt,
+            notes,
+            userId: req.user.id,
+            isPo: false,
+        });
+        if (error) {
+            return res.status(error.status).json({ message: error.message });
+        }
+        const payload = serializePaddockMove(result.move);
+        return res.status(201).json({
+            move: { ...payload, fromPaddockId: result.fromPaddockId, toPaddockId: result.toPaddockId },
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao movimentar animal entre pastos.' });
+    }
+});
+
+app.get('/po/animals/:id/paddock-moves', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const animal = await prisma.poAnimal.findFirst({
+            where: { id, farm: { userId: req.user.id } },
+        });
+        if (!animal) {
+            return res.status(404).json({ message: 'Animal P.O. não encontrado.' });
+        }
+
+        const moves = await prisma.paddockMove.findMany({
+            where: { poAnimalId: id },
+            include: { paddock: true },
+            orderBy: { startAt: 'desc' },
+        });
+
+        const items = moves.map(serializePaddockMove);
+        return res.json({ moves: items, items, total: items.length });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao listar movimentações de pasto.' });
+    }
+});
+
+app.post('/po/animals/:id/paddock-moves', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        if (!paddockId) {
+            return res.status(400).json({ message: 'Pasto obrigatório para movimentação.' });
+        }
+        const { error, result } = await moveAnimalBetweenPaddocks({
+            animalId: id,
+            paddockId,
+            startAt,
+            notes,
+            userId: req.user.id,
+            isPo: true,
+        });
+        if (error) {
+            return res.status(error.status).json({ message: error.message });
+        }
+        const payload = serializePaddockMove(result.move);
+        return res.status(201).json({
+            move: { ...payload, fromPaddockId: result.fromPaddockId, toPaddockId: result.toPaddockId },
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao movimentar animal entre pastos.' });
+    }
+});
+
+app.post('/animals/:id/move-pasto', async (req, res) => {
+    const { id } = req.params;
+    const { pastoId, paddockId, date, startAt, notes, farmId } = req.body || {};
+    const targetPaddockId = pastoId || paddockId;
+    if (!targetPaddockId) {
+        return res.status(400).json({ message: 'Pasto obrigatório para movimentação.' });
+    }
+    try {
+        if (farmId) {
+            const animal = await prisma.animal.findFirst({
+                where: { id, farmId: String(farmId), farm: { userId: req.user.id } },
+            });
+            if (!animal) {
+                return res.status(404).json({ message: 'Animal não encontrado para a fazenda informada.' });
+            }
+        }
+        const { error, result } = await moveAnimalBetweenPaddocks({
+            animalId: id,
+            paddockId: targetPaddockId,
+            startAt: startAt || date,
+            notes,
+            userId: req.user.id,
+            isPo: false,
+        });
+        if (error) {
+            return res.status(error.status).json({ message: error.message });
+        }
+        const payload = serializePaddockMove(result.move);
+        return res.status(201).json({
+            item: { ...payload, fromPaddockId: result.fromPaddockId, toPaddockId: result.toPaddockId },
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao movimentar animal entre pastos.' });
+    }
+});
+
+app.post('/po/animals/:id/move-pasto', async (req, res) => {
+    const { id } = req.params;
+    const { pastoId, paddockId, date, startAt, notes, farmId } = req.body || {};
+    const targetPaddockId = pastoId || paddockId;
+    if (!targetPaddockId) {
+        return res.status(400).json({ message: 'Pasto obrigatório para movimentação.' });
+    }
+    try {
+        if (farmId) {
+            const animal = await prisma.poAnimal.findFirst({
+                where: { id, farmId: String(farmId), farm: { userId: req.user.id } },
+            });
+            if (!animal) {
+                return res.status(404).json({ message: 'Animal P.O. não encontrado para a fazenda informada.' });
+            }
+        }
+        const { error, result } = await moveAnimalBetweenPaddocks({
+            animalId: id,
+            paddockId: targetPaddockId,
+            startAt: startAt || date,
+            notes,
+            userId: req.user.id,
+            isPo: true,
+        });
+        if (error) {
+            return res.status(error.status).json({ message: error.message });
+        }
+        const payload = serializePaddockMove(result.move);
+        return res.status(201).json({
+            item: { ...payload, fromPaddockId: result.fromPaddockId, toPaddockId: result.toPaddockId },
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Erro ao movimentar animal entre pastos.' });
     }
 });
 

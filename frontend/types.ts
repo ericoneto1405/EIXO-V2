@@ -10,9 +10,12 @@ export interface Animal {
     sexo: AnimalSexo;
     dataNascimento: string;
     pesoAtual: number;
-    gmd: number; // Ganho Médio Diário
+    gmd: number | null; // GMD atual (últimas duas pesagens válidas)
+    gmdLast?: number | null;
+    gmd30?: number | null;
     farmId?: string;
     lotId?: string | null;
+    currentPaddockId?: string | null;
     createdAt?: string;
     updatedAt?: string;
 }
@@ -74,9 +77,19 @@ export interface AnimalUI {
     dataNascimento?: string | null;
     pesoAtual: number | null;
     gmd: number | null;
+    gmdLast?: number | null;
+    gmd30?: number | null;
     lotId?: string | null;
     registro?: string | null;
     categoria?: string | null;
+    currentPaddockId?: string | null;
+    currentPaddockName?: string | null;
+    nutritionPlan?: {
+        id: string;
+        nome: string;
+        fase?: string | null;
+        metaGmd?: number | null;
+    } | null;
 }
 
 export interface WeighingUI {
@@ -98,7 +111,20 @@ export interface Lot {
 export interface Paddock {
     id: string;
     name: string;
-    size: number;
+    areaHa?: number | null;
+    capacity?: number | null;
+    active?: boolean;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+}
+
+export interface PaddockMove {
+    id: string;
+    paddockId: string;
+    paddockName?: string | null;
+    startAt: string;
+    endAt?: string | null;
+    notes?: string | null;
 }
 
 export interface Farm {

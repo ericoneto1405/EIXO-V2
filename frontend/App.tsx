@@ -404,7 +404,7 @@ const AppContent: React.FC = () => {
                         />
                     );
                 }
-                return <GeneticsPlantelPO farmId={selectedFarmId} mode="full" />;
+                return <HerdModule farmId={selectedFarmId} mode="PO" />;
             case 'Rebanho Genética':
                 return <Navigate to="/genetics/plantel" replace />;
             case 'Contas a Pagar':

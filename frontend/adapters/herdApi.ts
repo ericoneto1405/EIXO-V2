@@ -1,5 +1,5 @@
 import { buildApiUrl } from '../api';
-import type { AnimalUI, LotUI, WeighingUI } from '../types';
+import type { AnimalUI, LotUI, PaddockMove, WeighingUI } from '../types';
 
 export type HerdType = 'COMMERCIAL' | 'PO';
 
@@ -32,9 +32,14 @@ const normalizeAnimal = (animal: any, herdType: HerdType): HerdAnimal => {
             dataNascimento: animal.dataNascimento || null,
             pesoAtual: typeof animal.pesoAtual === 'number' ? animal.pesoAtual : null,
             gmd: typeof animal.gmd === 'number' ? animal.gmd : null,
+            gmdLast: typeof animal.gmdLast === 'number' ? animal.gmdLast : null,
+            gmd30: typeof animal.gmd30 === 'number' ? animal.gmd30 : null,
             lotId: animal.lotId || null,
             registro: animal.registro || null,
             categoria: animal.categoria || null,
+            currentPaddockId: animal.currentPaddockId || null,
+            currentPaddockName: animal.currentPaddockName || null,
+            nutritionPlan: animal.nutritionPlan || null,
         };
     }
 
@@ -49,9 +54,14 @@ const normalizeAnimal = (animal: any, herdType: HerdType): HerdAnimal => {
         dataNascimento: animal.dataNascimento,
         pesoAtual: typeof animal.pesoAtual === 'number' ? animal.pesoAtual : null,
         gmd: typeof animal.gmd === 'number' ? animal.gmd : null,
+        gmdLast: typeof animal.gmdLast === 'number' ? animal.gmdLast : null,
+        gmd30: typeof animal.gmd30 === 'number' ? animal.gmd30 : null,
         lotId: animal.lotId,
         registro: null,
         categoria: null,
+        currentPaddockId: animal.currentPaddockId || null,
+        currentPaddockName: animal.currentPaddockName || null,
+        nutritionPlan: animal.nutritionPlan || null,
     };
 };
 
@@ -160,4 +170,37 @@ export const createWeighing = async (
         };
     }
     return data.pesagem;
+};
+
+export const listPaddockMoves = async (animalId: string, herdType: HerdType): Promise<PaddockMove[]> => {
+    const endpoint = herdType === 'PO'
+        ? `/po/animals/${animalId}/paddock-moves`
+        : `/animals/${animalId}/paddock-moves`;
+    const response = await fetch(buildApiUrl(endpoint), { credentials: 'include' });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(payload?.message || 'Erro ao listar movimentações de pasto.');
+    }
+    return payload.moves || [];
+};
+
+export const createPaddockMove = async (
+    animalId: string,
+    herdType: HerdType,
+    payload: Record<string, any>,
+): Promise<PaddockMove> => {
+    const endpoint = herdType === 'PO'
+        ? `/po/animals/${animalId}/paddock-moves`
+        : `/animals/${animalId}/paddock-moves`;
+    const response = await fetch(buildApiUrl(endpoint), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(data?.message || 'Erro ao salvar movimentação de pasto.');
+    }
+    return data.move;
 };

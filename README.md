@@ -411,7 +411,7 @@ curl -b cookies.txt -i -X POST http://localhost:3001/lots \
 ```bash
 curl -b cookies.txt -i -X POST http://localhost:3001/animals \
   -H "Content-Type: application/json" \
-  -d '{"farmId":"<FARM_ID>","brinco":"BR100","raca":"Nelore","sexo":"Macho","dataNascimento":"2023-01-01","pesoAtual":450,"lotId":"<LOT_ID>"}'
+  -d '{"farmId":"<FARM_ID>","brinco":"BR100","raca":"Nelore","sexo":"Macho","dataNascimento":"2023-01-01","pesoAtual":450,"lotId":"<LOT_ID>","paddockId":"<PASTO_ID>"}'
 ```
 
 3) Registrar pesagem (comercial):
@@ -425,7 +425,7 @@ curl -b cookies.txt -i -X POST http://localhost:3001/animals/<ANIMAL_ID>/pesagen
 ```bash
 curl -b cookies.txt -i -X POST http://localhost:3001/po/animals \
   -H "Content-Type: application/json" \
-  -d '{"farmId":"<FARM_ID>","nome":"Matriz PO","raca":"Nelore","sexo":"FEMEA","brinco":"POF100","registro":"ABCZ-100","pesoAtual":430}'
+  -d '{"farmId":"<FARM_ID>","nome":"Matriz PO","raca":"Nelore","sexo":"FEMEA","brinco":"POF100","registro":"ABCZ-100","pesoAtual":430,"paddockId":"<PASTO_ID>"}'
 ```
 
 5) Registrar pesagem (P.O.):
@@ -439,4 +439,79 @@ curl -b cookies.txt -i -X POST http://localhost:3001/po/animals/<PO_ANIMAL_ID>/p
 ```bash
 curl -b cookies.txt -i "http://localhost:3001/po/animals?farmId=<FARM_ID>"
 curl -b cookies.txt -i "http://localhost:3001/po/animals/<PO_ANIMAL_ID>/pesagens"
+```
+
+### Smoke Test Pastos + GMD (copiar/colar)
+Pré-requisitos: DB no ar, backend em `http://localhost:3001`.
+
+Notas GMD:
+- Usa as 2 últimas pesagens válidas (mesmo dia: última registrada).
+- Se não houver 2 pesagens, `gmdLast` fica `null`.
+- `gmd30` usa a primeira e a última pesagem dentro da janela de 30 dias.
+
+1) Verificar pasto principal ao criar fazenda:
+```bash
+curl -b cookies.txt -i -X POST http://localhost:3001/farms \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Fazenda Pasto","city":"Feira","size":120}'
+
+curl -b cookies.txt -i "http://localhost:3001/pastos?farmId=<FARM_ID>"
+```
+
+2) Criar animal sem pasto (esperado 400):
+```bash
+curl -b cookies.txt -i -X POST http://localhost:3001/animals \
+  -H "Content-Type: application/json" \
+  -d '{"farmId":"<FARM_ID>","brinco":"BR200","raca":"Nelore","sexo":"Macho","dataNascimento":"2023-01-01","pesoAtual":450}'
+```
+
+3) Criar pasto adicional:
+```bash
+curl -b cookies.txt -i -X POST http://localhost:3001/pastos \
+  -H "Content-Type: application/json" \
+  -d '{"farmId":"<FARM_ID>","nome":"Pasto 02 - Rotacionado","areaHa":20}'
+```
+
+4) Criar animal comercial com pasto:
+```bash
+curl -b cookies.txt -i -X POST http://localhost:3001/animals \
+  -H "Content-Type: application/json" \
+  -d '{"farmId":"<FARM_ID>","brinco":"BR201","raca":"Nelore","sexo":"Macho","dataNascimento":"2023-01-01","pesoAtual":450,"paddockId":"<PASTO_ID>"}'
+```
+
+5) Mover de pasto:
+```bash
+curl -b cookies.txt -i -X POST http://localhost:3001/animals/<ANIMAL_ID>/move-pasto \
+  -H "Content-Type: application/json" \
+  -d '{"pastoId":"<PASTO_ID_2>","date":"2024-02-01","notes":"Rotação"}'
+```
+
+6) Pesagens e GMD (gmdLast):
+```bash
+curl -b cookies.txt -i -X POST http://localhost:3001/animals/<ANIMAL_ID>/pesagens \
+  -H "Content-Type: application/json" \
+  -d '{"data":"2024-01-10","peso":470}'
+
+curl -b cookies.txt -i -X POST http://localhost:3001/animals/<ANIMAL_ID>/pesagens \
+  -H "Content-Type: application/json" \
+  -d '{"data":"2024-02-10","peso":500}'
+
+curl -b cookies.txt -i "http://localhost:3001/animals?farmId=<FARM_ID>"
+```
+
+7) Repetir para P.O.:
+```bash
+curl -b cookies.txt -i -X POST http://localhost:3001/po/animals \
+  -H "Content-Type: application/json" \
+  -d '{"farmId":"<FARM_ID>","nome":"Matriz PO","raca":"Nelore","sexo":"FEMEA","brinco":"POF200","registro":"ABCZ-200","pesoAtual":430,"paddockId":"<PASTO_ID>"}'
+
+curl -b cookies.txt -i -X POST http://localhost:3001/po/animals/<PO_ANIMAL_ID>/pesagens \
+  -H "Content-Type: application/json" \
+  -d '{"data":"2024-03-01","peso":440}'
+
+curl -b cookies.txt -i -X POST http://localhost:3001/po/animals/<PO_ANIMAL_ID>/pesagens \
+  -H "Content-Type: application/json" \
+  -d '{"data":"2024-04-01","peso":470}'
+
+curl -b cookies.txt -i "http://localhost:3001/po/animals?farmId=<FARM_ID>"
 ```
