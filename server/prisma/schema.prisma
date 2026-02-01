@@ -1,0 +1,417 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         String    @id @default(uuid())
+  name       String
+  email      String    @unique
+  password   String
+  modules    String[]
+  roles      String[]  @default([])
+  lastFarmId String?
+  createdAt  DateTime  @default(now())
+  farms      Farm[]
+  sessions   Session[]
+}
+
+model Farm {
+  id         String           @id @default(uuid())
+  name       String
+  city       String
+  lat        Float?
+  lng        Float?
+  size       Float
+  notes      String?
+  createdAt  DateTime         @default(now())
+  reproMode  ReproMode        @default(CONTINUO)
+  paddocks   Paddock[]
+  lots       Lot[]
+  animals    Animal[]
+  seasons    BreedingSeason[]
+  reproEvents ReproEvent[]
+  selectionDecisions SelectionDecision[]
+  poAnimals  PoAnimal[]
+  poLots     PoLot[]
+  semenBatches SemenBatch[]
+  embryoBatches EmbryoBatch[]
+  poWeighings PoWeighing[]
+  nutritionPlans NutritionPlan[]
+  nutritionAssignments NutritionAssignment[]
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+
+  @@index([userId])
+}
+
+model Paddock {
+  id     String @id @default(uuid())
+  name   String
+  size   Float
+  farm   Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId String
+}
+
+enum AnimalSexo {
+  MACHO
+  FEMEA
+}
+
+model Lot {
+  id        String   @id @default(uuid())
+  name      String
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId    String
+  animals   Animal[]
+  nutritionAssignments NutritionAssignment[]
+
+  @@index([farmId])
+}
+
+model Animal {
+  id             String       @id @default(uuid())
+  brinco         String
+  raca           String
+  sexo           AnimalSexo
+  dataNascimento DateTime
+  pesoAtual      Float
+  gmd            Float
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  farm           Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId         String
+  lot            Lot?         @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  lotId          String?
+  pesagens       Weighing[]
+  exposures      Exposure[]
+  reproEvents    ReproEvent[]
+  selectionDecisions SelectionDecision[]
+  nutritionAssignments NutritionAssignment[]
+
+  @@unique([farmId, brinco])
+  @@index([farmId])
+  @@index([lotId])
+}
+
+model Weighing {
+  id        String   @id @default(uuid())
+  data      DateTime
+  peso      Float
+  gmd       Float
+  createdAt DateTime @default(now())
+  animal    Animal   @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalId  String
+
+  @@unique([animalId, data])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  tokenHash String   @unique
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+enum ReproMode {
+  CONTINUO
+  ESTACAO
+}
+
+enum ReproEventType {
+  COBERTURA
+  IATF
+  DIAGNOSTICO_PRENHEZ
+  PARTO
+  DESMAME
+}
+
+enum SelectionDecisionType {
+  KEEP
+  WATCH
+  DISCARD
+}
+
+enum EmbryoTechnique {
+  FIV
+  TE
+}
+
+enum SemenMoveType {
+  IN
+  OUT
+  USE
+  ADJUST
+}
+
+enum EmbryoMoveType {
+  IN
+  OUT
+  TRANSFER
+  ADJUST
+}
+
+model BreedingSeason {
+  id        String      @id @default(uuid())
+  farm      Farm        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId    String
+  name      String
+  startAt   DateTime
+  endAt     DateTime
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  exposures Exposure[]
+  events    ReproEvent[]
+
+  @@index([farmId, startAt])
+}
+
+model Exposure {
+  id        String         @id @default(uuid())
+  season    BreedingSeason @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  seasonId  String
+  animal    Animal         @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalId  String
+  createdAt DateTime       @default(now())
+
+  @@unique([seasonId, animalId])
+  @@index([animalId])
+}
+
+model ReproEvent {
+  id        String          @id @default(uuid())
+  farm      Farm            @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId    String
+  animal    Animal          @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalId  String
+  type      ReproEventType
+  date      DateTime
+  season    BreedingSeason? @relation(fields: [seasonId], references: [id], onDelete: SetNull)
+  seasonId  String?
+  payload   Json?
+  notes     String?
+  bullId    String?
+  protocol  String?
+  createdAt DateTime        @default(now())
+
+  @@index([animalId, date])
+  @@index([farmId, date])
+  @@index([seasonId])
+}
+
+model SelectionDecision {
+  id        String                 @id @default(uuid())
+  farm      Farm                   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId    String
+  animal    Animal                 @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalId  String
+  decision  SelectionDecisionType
+  reason    String?
+  createdAt DateTime               @default(now())
+  updatedAt DateTime               @updatedAt
+
+  @@unique([farmId, animalId])
+  @@index([animalId])
+  @@index([farmId])
+}
+
+model PoAnimal {
+  id             String      @id @default(uuid())
+  farm           Farm        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId         String
+  brinco         String?
+  nome           String
+  raca           String
+  sexo           AnimalSexo
+  dataNascimento DateTime?
+  pesoAtual      Float       @default(0)
+  gmd            Float       @default(0)
+  lot            PoLot?      @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  lotId          String?
+  registro       String?
+  categoria      String?
+  observacoes    String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  pesagens       PoWeighing[]
+  semenBatches   SemenBatch[] @relation("SemenBull")
+  embryoDonorBatches EmbryoBatch[] @relation("EmbryoDonor")
+  embryoSireBatches EmbryoBatch[] @relation("EmbryoSire")
+  nutritionAssignments NutritionAssignment[]
+
+  @@index([farmId])
+  @@unique([farmId, brinco])
+  @@index([lotId])
+}
+
+model PoLot {
+  id        String   @id @default(uuid())
+  name      String
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId    String
+  animals   PoAnimal[]
+  nutritionAssignments NutritionAssignment[]
+
+  @@index([farmId])
+}
+
+model PoWeighing {
+  id         String   @id @default(uuid())
+  data       DateTime
+  peso       Float
+  gmd        Float
+  notes      String?
+  createdAt  DateTime @default(now())
+  poAnimal   PoAnimal @relation(fields: [poAnimalId], references: [id], onDelete: Cascade)
+  poAnimalId String
+  farm       Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId     String
+
+  @@unique([poAnimalId, data])
+  @@index([poAnimalId, data])
+  @@index([farmId])
+  @@index([farmId, data])
+}
+
+model NutritionPlan {
+  id         String   @id @default(uuid())
+  farm       Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId     String
+  nome       String
+  fase       String?
+  startAt    DateTime
+  endAt      DateTime?
+  metaGmd    Float?
+  observacoes String?
+  assignments NutritionAssignment[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([farmId])
+}
+
+model NutritionAssignment {
+  id         String   @id @default(uuid())
+  farm       Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId     String
+  plan       NutritionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planId     String
+  lot        Lot?     @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  lotId      String?
+  poLot      PoLot?   @relation(fields: [poLotId], references: [id], onDelete: Cascade)
+  poLotId    String?
+  animal     Animal?  @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  animalId   String?
+  poAnimal   PoAnimal? @relation(fields: [poAnimalId], references: [id], onDelete: Cascade)
+  poAnimalId String?
+  startAt    DateTime
+  endAt      DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([farmId])
+  @@index([planId])
+  @@index([lotId])
+  @@index([poLotId])
+  @@index([animalId])
+  @@index([poAnimalId])
+  @@index([farmId, startAt])
+}
+
+model SemenBatch {
+  id                String       @id @default(uuid())
+  farm              Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId            String
+  bullPoAnimal      PoAnimal?    @relation("SemenBull", fields: [bullPoAnimalId], references: [id], onDelete: SetNull)
+  bullPoAnimalId    String?
+  bullName          String?
+  bullRegistry      String?
+  fornecedor        String?
+  lote              String
+  dataColeta        DateTime?
+  dosesTotal        Int
+  dosesDisponiveis  Int
+  localArmazenamento String?
+  observacoes       String?
+  moves             SemenMove[]
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([farmId])
+  @@index([bullPoAnimalId])
+  @@unique([farmId, lote])
+}
+
+model EmbryoBatch {
+  id                   String       @id @default(uuid())
+  farm                 Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  farmId               String
+  donorPoAnimal        PoAnimal?    @relation("EmbryoDonor", fields: [donorPoAnimalId], references: [id], onDelete: SetNull)
+  donorPoAnimalId      String?
+  donorName            String?
+  donorRegistry        String?
+  sirePoAnimal         PoAnimal?    @relation("EmbryoSire", fields: [sirePoAnimalId], references: [id], onDelete: SetNull)
+  sirePoAnimalId       String?
+  sireName             String?
+  sireRegistry         String?
+  tecnica              EmbryoTechnique
+  estagio              String?
+  qualidade            String?
+  lote                 String
+  quantidadeTotal      Int
+  quantidadeDisponivel Int
+  localArmazenamento   String?
+  observacoes          String?
+  moves                EmbryoMove[]
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  @@index([farmId])
+  @@index([donorPoAnimalId])
+  @@index([sirePoAnimalId])
+  @@unique([farmId, lote])
+}
+
+model SemenMove {
+  id           String       @id @default(uuid())
+  semenBatch   SemenBatch   @relation(fields: [semenBatchId], references: [id], onDelete: Cascade)
+  semenBatchId String
+  date         DateTime
+  qty          Int
+  type         SemenMoveType
+  notes        String?
+  createdAt    DateTime     @default(now())
+
+  @@index([semenBatchId])
+}
+
+model EmbryoMove {
+  id            String        @id @default(uuid())
+  embryoBatch   EmbryoBatch   @relation(fields: [embryoBatchId], references: [id], onDelete: Cascade)
+  embryoBatchId String
+  date          DateTime
+  qty           Int
+  type          EmbryoMoveType
+  notes         String?
+  createdAt     DateTime      @default(now())
+
+  @@index([embryoBatchId])
+}
